@@ -123,9 +123,9 @@ proc receive*(client: MQTTClient, topicName: var string, message: var MQTTMessag
       MQTTClient_freeMessage(addr cmessage)
     MQTTClient_free(cTopicName)
 
-type MessageArrived* = proc (topicName: string; message: MQTTMessage): cint
-type DeliveryComplete* = proc (dt: MQTTClient_deliveryToken)
-type ConnectionLost* = proc (cause: string)
+type MessageArrived* = proc (topicName: string; message: MQTTMessage): cint {.gcsafe.}
+type DeliveryComplete* = proc (dt: MQTTClient_deliveryToken) {.gcsafe.}
+type ConnectionLost* = proc (cause: string) {.gcsafe.}
 
 type CallbackContext = object
   connectionLost: ConnectionLost
@@ -133,12 +133,14 @@ type CallbackContext = object
   deliveryComplete: DeliveryComplete
 
 proc connectionLost(context: pointer, cause: cstring) {.cdecl.} =
+  system.setupForeignThreadGc()
   var context = cast[ptr CallbackContext](context)
   if context.connectionLost != nil:
     var cause = $cause
     context.connectionLost(cause)
 
 proc messageArrived(context: pointer, topicName: cstring, topicLen: cint, cmessage: ptr MQTTClient_message): cint {.cdecl.} =
+  system.setupForeignThreadGc()
   var context = cast[ptr CallbackContext](context)
   if context.messageArrived != nil:
     # length is only sent if the string contains nulls, otherwise it is a null-terminated cstring
@@ -149,20 +151,23 @@ proc messageArrived(context: pointer, topicName: cstring, topicLen: cint, cmessa
       message.payload = cast[cstring](cmessage.payload) $ cmessage.payloadlen
       message.qos = QOS cmessage.qos
       message.retained = cmessage.retained != 0
+    echo "All good"
     result = context.messageArrived(topic, message)
 
 proc deliveryComplete(context: pointer, dt: MQTTDeliveryToken) {.cdecl.} =
+  system.setupForeignThreadGc()
   var context = cast[ptr CallbackContext](context)
   if context.deliveryComplete != nil:
     context.deliveryComplete(dt)
 
-# global holding context callbacks
-var context = CallbackContext()
+# Thread var holding context callbacks
+#var context {.threadvar.}: ptr CallbackContext
 
 proc setCallbacks*(client: MQTTClient,
                    cl: ConnectionLost,
                    ma: MessageArrived,
                    dc: DeliveryComplete) {.raises: [MQTTError, Exception].} =
+  var context = cast[ptr CallbackContext](allocShared0(sizeof(CallbackContext)))
   context.connectionLost = cl
   context.messageArrived = ma
   context.deliveryComplete = dc
